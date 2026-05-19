@@ -10,6 +10,7 @@ export interface User {
   favoriteClub?: string;
   country?: string;
   elo: number;
+  initials?: string;
   rank: number;
   createdAt: string;
 }
@@ -67,6 +68,7 @@ export interface Division {
 
 export interface DivisionPlayer extends GroupPlayer {
   elo: number;
+  initials?: string;
   winRate: number;
 }
 
@@ -135,6 +137,7 @@ export interface Notification {
 export interface EloHistory {
   date: string;
   elo: number;
+  initials?: string;
 }
 
 export interface Achievement {
