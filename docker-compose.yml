@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ppw
+      POSTGRES_USER: ppw_user
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-ppw_secure_pass}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ppw_user -d ppw"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql://ppw_user:${DB_PASSWORD:-ppw_secure_pass}@postgres:5432/ppw
+      JWT_SECRET: ${JWT_SECRET:-change_me_in_production}
+      API_FOOTBALL_KEY: ${API_FOOTBALL_KEY:-b5f32fca78a3109d159e270f65125610}
+      PORT: 4000
+    ports:
+      - "4000:4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    environment:
+      NEXT_PUBLIC_API_URL: ${API_URL:-http://localhost:4000/api}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:

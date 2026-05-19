@@ -1,0 +1,498 @@
+// ================================================
+// PREDICT • PLAY • WIN — Database Schema
+// Football Prediction Tournament Platform
+// ================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ========================
+// USER & AUTH
+// ========================
+
+enum UserRole {
+  SUPER_ADMIN
+  ADMIN
+  PLAYER
+}
+
+model User {
+  id            String   @id @default(uuid())
+  username      String   @unique
+  email         String   @unique
+  passwordHash  String   @map("password_hash")
+  role          UserRole @default(PLAYER)
+  favoriteClub  String?  @map("favorite_club") // club API ID
+  country       String?
+  profilePhoto  String?  @map("profile_photo") // URL to stored image
+  eloRating     Int      @default(1000) @map("elo_rating")
+  isActive      Boolean  @default(true) @map("is_active")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  predictions          Prediction[]
+  tournamentPlayers    TournamentPlayer[]
+  h2hMatchesAsPlayer1  H2HMatch[]         @relation("H2HPlayer1")
+  h2hMatchesAsPlayer2  H2HMatch[]         @relation("H2HPlayer2")
+  knockoutAsPlayer1    KnockoutMatch[]    @relation("KnockoutPlayer1")
+  knockoutAsPlayer2    KnockoutMatch[]    @relation("KnockoutPlayer2")
+  knockoutWins         KnockoutMatch[]    @relation("KnockoutWinner")
+  eloHistory           EloHistory[]
+  challengesSent       Challenge[]        @relation("Challenger")
+  challengesReceived   Challenge[]        @relation("Challenged")
+  challengeWins        Challenge[]        @relation("ChallengeWinner")
+  challengePredictions ChallengePrediction[]
+  notifications        Notification[]
+
+  @@map("users")
+  auditLogs    AdminAuditLog[] @relation("AuditLogAdmin")
+}
+
+// ========================
+// LEAGUES & CLUBS
+// ========================
+
+model League {
+  id           String  @id @default(uuid())
+  name         String  // "La Liga", "Premier League", etc.
+  apiFootballId Int    @unique @map("api_football_id")
+  logoUrl      String? @map("logo_url")
+  country      String?
+  isActive     Boolean @default(true) @map("is_active")
+
+  // Relations
+  clubs       Club[]
+  tournaments Tournament[]
+  challenges  Challenge[]
+
+  @@map("leagues")
+}
+
+model Club {
+  id            String  @id @default(uuid())
+  name          String
+  apiFootballId Int     @unique @map("api_football_id")
+  logoUrl       String? @map("logo_url")
+  shortName     String? @map("short_name")
+  leagueId      String  @map("league_id")
+
+  // Relations
+  league       League    @relation(fields: [leagueId], references: [id])
+  homeFixtures Fixture[] @relation("HomeClub")
+  awayFixtures Fixture[] @relation("AwayClub")
+
+  @@map("clubs")
+}
+
+// ========================
+// TOURNAMENTS
+// ========================
+
+enum TournamentFormat {
+  SIXTEEN   // 16 players: 4 groups of 4
+  TWENTY_FOUR // 24 players: 6 groups of 4
+}
+
+enum TournamentStatus {
+  DRAFT         // Created, not started
+  REGISTRATION  // Accepting players
+  GROUP_STAGE
+  KNOCKOUT
+  COMPLETED
+  CANCELLED
+}
+
+model Tournament {
+  id              String           @id @default(uuid())
+  name            String
+  leagueId        String           @map("league_id")
+  format          TournamentFormat
+  status          TournamentStatus @default(DRAFT)
+  startingRound   Int              @map("starting_round") // Which league round to start from
+  currentMatchday Int              @default(0) @map("current_matchday")
+  createdById     String           @map("created_by_id")
+  createdAt       DateTime         @default(now()) @map("created_at")
+  startedAt       DateTime?        @map("started_at")
+  completedAt     DateTime?        @map("completed_at")
+
+  // Relations
+  league     League             @relation(fields: [leagueId], references: [id])
+  groups     Group[]
+  matchdays  Matchday[]
+  players    TournamentPlayer[]
+  knockouts  KnockoutMatch[]
+
+  @@map("tournaments")
+}
+
+model Group {
+  id           String @id @default(uuid())
+  tournamentId String @map("tournament_id")
+  name         String // "A", "B", "C", "D", "E", "F"
+
+  // Relations
+  tournament Tournament         @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  players    TournamentPlayer[]
+  h2hMatches H2HMatch[]
+
+  @@unique([tournamentId, name])
+  @@map("groups")
+}
+
+model TournamentPlayer {
+  id           String @id @default(uuid())
+  tournamentId String @map("tournament_id")
+  userId       String @map("user_id")
+  groupId      String? @map("group_id")
+
+  // Group stage stats (cached for performance)
+  played       Int @default(0)
+  wins         Int @default(0)
+  draws        Int @default(0)
+  losses       Int @default(0)
+  goalsFor     Int @default(0) @map("goals_for")
+  goalsAgainst Int @default(0) @map("goals_against")
+  goalDiff     Int @default(0) @map("goal_diff")
+  points       Int @default(0)
+
+  // Relations
+  tournament Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  user       User       @relation(fields: [userId], references: [id])
+  group      Group?     @relation(fields: [groupId], references: [id])
+
+  @@unique([tournamentId, userId])
+  @@map("tournament_players")
+}
+
+// ========================
+// MATCHDAYS & FIXTURES
+// ========================
+
+enum MatchdayStatus {
+  UPCOMING     // Not yet open for predictions
+  OPEN         // Predictions open
+  IN_PROGRESS  // Some matches started
+  COMPLETED    // All matches finished, scored
+}
+
+model Matchday {
+  id           String         @id @default(uuid())
+  tournamentId String         @map("tournament_id")
+  roundNumber  Int            @map("round_number") // 1, 2, 3 for group stage
+  leagueRound  Int            @map("league_round") // Actual league round number
+  status       MatchdayStatus @default(UPCOMING)
+  isKnockout   Boolean        @default(false) @map("is_knockout")
+  createdAt    DateTime       @default(now()) @map("created_at")
+
+  // Relations
+  tournament    Tournament     @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  fixtures      Fixture[]
+  h2hMatches    H2HMatch[]
+  knockoutMatches KnockoutMatch[]
+
+  @@unique([tournamentId, roundNumber])
+  @@map("matchdays")
+}
+
+enum FixtureStatus {
+  SCHEDULED
+  LIVE
+  FINISHED
+  POSTPONED
+  CANCELLED
+  EXCLUDED
+}
+
+model Fixture {
+  id                  String        @id @default(uuid())
+  matchdayId          String        @map("matchday_id")
+  apiFootballFixtureId Int?         @map("api_football_fixture_id")
+  homeClubId          String        @map("home_club_id")
+  awayClubId          String        @map("away_club_id")
+  kickoffTime         DateTime      @map("kickoff_time")
+  homeScore           Int?          @map("home_score")
+  awayScore           Int?          @map("away_score")
+  status              FixtureStatus @default(SCHEDULED)
+  isExcluded          Boolean       @default(false) @map("is_excluded") // For suspended matches
+  createdAt           DateTime      @default(now()) @map("created_at")
+  updatedAt           DateTime      @updatedAt @map("updated_at")
+
+  // Relations
+  matchday    Matchday     @relation(fields: [matchdayId], references: [id], onDelete: Cascade)
+  homeClub    Club         @relation("HomeClub", fields: [homeClubId], references: [id])
+  awayClub    Club         @relation("AwayClub", fields: [awayClubId], references: [id])
+  predictions Prediction[]
+  challengePredictions ChallengePrediction[]
+
+  @@map("fixtures")
+}
+
+// ========================
+// PREDICTIONS
+// ========================
+
+enum PredictionChoice {
+  HOME
+  DRAW
+  AWAY
+}
+
+model Prediction {
+  id         String           @id @default(uuid())
+  fixtureId  String           @map("fixture_id")
+  userId     String           @map("user_id")
+  prediction PredictionChoice
+  isCorrect  Boolean?         @map("is_correct") // null until match finishes
+  isLocked   Boolean          @default(false) @map("is_locked")
+  createdAt  DateTime         @default(now()) @map("created_at")
+  updatedAt  DateTime         @updatedAt @map("updated_at")
+
+  // Relations
+  fixture Fixture @relation(fields: [fixtureId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id])
+
+  @@unique([fixtureId, userId])
+  @@map("predictions")
+}
+
+// ========================
+// H2H MATCHES (Group Stage)
+// ========================
+
+enum H2HResult {
+  PLAYER1_WIN
+  PLAYER2_WIN
+  DRAW
+  PENDING
+}
+
+model H2HMatch {
+  id           String    @id @default(uuid())
+  matchdayId   String    @map("matchday_id")
+  groupId      String    @map("group_id")
+  player1Id    String    @map("player1_id")
+  player2Id    String    @map("player2_id")
+  player1Score Int       @default(0) @map("player1_score") // correct predictions count
+  player2Score Int       @default(0) @map("player2_score")
+  result       H2HResult @default(PENDING)
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  // Relations
+  matchday Matchday @relation(fields: [matchdayId], references: [id], onDelete: Cascade)
+  group    Group    @relation(fields: [groupId], references: [id])
+  player1  User     @relation("H2HPlayer1", fields: [player1Id], references: [id])
+  player2  User     @relation("H2HPlayer2", fields: [player2Id], references: [id])
+
+  @@unique([matchdayId, player1Id, player2Id])
+  @@map("h2h_matches")
+}
+
+// ========================
+// KNOCKOUT STAGE
+// ========================
+
+enum KnockoutRound {
+  ROUND_OF_16
+  QUARTER_FINAL
+  SEMI_FINAL
+  FINAL
+}
+
+model KnockoutMatch {
+  id           String        @id @default(uuid())
+  tournamentId String        @map("tournament_id")
+  matchdayId   String?       @map("matchday_id")
+  round        KnockoutRound
+  position     Int           // Match position within the round (1-8 for R16, 1-4 for QF, etc.)
+  player1Id    String?       @map("player1_id")
+  player2Id    String?       @map("player2_id")
+  player1Score Int           @default(0) @map("player1_score")
+  player2Score Int           @default(0) @map("player2_score")
+  winnerId     String?       @map("winner_id")
+  status       H2HResult     @default(PENDING)
+  createdAt    DateTime      @default(now()) @map("created_at")
+
+  // Relations
+  tournament Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  matchday   Matchday?  @relation(fields: [matchdayId], references: [id])
+  player1    User?      @relation("KnockoutPlayer1", fields: [player1Id], references: [id])
+  player2    User?      @relation("KnockoutPlayer2", fields: [player2Id], references: [id])
+  winner     User?      @relation("KnockoutWinner", fields: [winnerId], references: [id])
+
+  @@map("knockout_matches")
+}
+
+// ========================
+// ELO SYSTEM
+// ========================
+
+enum EloMatchType {
+  TOURNAMENT
+  CHALLENGE
+}
+
+model EloHistory {
+  id         String       @id @default(uuid())
+  userId     String       @map("user_id")
+  eloBefore  Int          @map("elo_before")
+  eloAfter   Int          @map("elo_after")
+  eloChange  Int          @map("elo_change")
+  matchType  EloMatchType @map("match_type")
+  matchId    String       @map("match_id") // H2H match ID or Challenge ID
+  opponentId String       @map("opponent_id")
+  multiplier Float        @default(1.0) // For diminishing ELO in challenges
+  createdAt  DateTime     @default(now()) @map("created_at")
+
+  // Relations
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("elo_history")
+}
+
+// ========================
+// 1v1 CHALLENGE SYSTEM
+// ========================
+
+enum ChallengeStatus {
+  PENDING    // Waiting for response
+  ACCEPTED   // Challenge accepted, predictions open
+  REJECTED   // Declined
+  EXPIRED    // 24h passed without response
+  IN_PROGRESS // Matches being played
+  COMPLETED  // All matches done, scored
+  CANCELLED
+}
+
+model Challenge {
+  id              String          @id @default(uuid())
+  challengerId    String          @map("challenger_id")
+  challengedId    String          @map("challenged_id")
+  leagueId        String          @map("league_id")
+  leagueRound     Int             @map("league_round") // Auto-selected upcoming round
+  status          ChallengeStatus @default(PENDING)
+  challengerScore Int             @default(0) @map("challenger_score")
+  challengedScore Int             @default(0) @map("challenged_score")
+  winnerId        String?         @map("winner_id")
+  eloMultiplier   Float           @default(1.0) @map("elo_multiplier") // Diminishing for repeated matchups
+  createdAt       DateTime        @default(now()) @map("created_at")
+  expiresAt       DateTime        @map("expires_at") // 24h from creation
+  completedAt     DateTime?       @map("completed_at")
+
+  // Relations
+  challenger  User   @relation("Challenger", fields: [challengerId], references: [id])
+  challenged  User   @relation("Challenged", fields: [challengedId], references: [id])
+  league      League @relation(fields: [leagueId], references: [id])
+  winner      User?  @relation("ChallengeWinner", fields: [winnerId], references: [id])
+  predictions ChallengePrediction[]
+
+  @@map("challenges")
+}
+
+model ChallengePrediction {
+  id           String           @id @default(uuid())
+  challengeId  String           @map("challenge_id")
+  fixtureId    String           @map("fixture_id")
+  userId       String           @map("user_id")
+  prediction   PredictionChoice
+  isCorrect    Boolean?         @map("is_correct")
+  createdAt    DateTime         @default(now()) @map("created_at")
+
+  // Relations
+  challenge Challenge @relation(fields: [challengeId], references: [id], onDelete: Cascade)
+  fixture   Fixture   @relation(fields: [fixtureId], references: [id])
+  user      User      @relation(fields: [userId], references: [id])
+
+  @@unique([challengeId, fixtureId, userId])
+  @@map("challenge_predictions")
+}
+
+// ========================
+// NOTIFICATIONS
+// ========================
+
+enum NotificationType {
+  TOURNAMENT_STARTED
+  GROUP_DRAWN
+  MATCHDAY_OPEN
+  PREDICTIONS_LOCKED
+  RESULTS_IN
+  H2H_RESULT
+  KNOCKOUT_ADVANCE
+  KNOCKOUT_ELIMINATED
+  ELO_CHANGE
+  CHALLENGE_RECEIVED
+  CHALLENGE_ACCEPTED
+  CHALLENGE_REJECTED
+  CHALLENGE_EXPIRED
+  CHALLENGE_RESULT
+  TOURNAMENT_WON
+}
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String           @map("user_id")
+  type      NotificationType
+  title     String
+  message   String
+  data      Json?            // Extra data (tournament ID, match ID, etc.)
+  isRead    Boolean          @default(false) @map("is_read")
+  createdAt DateTime         @default(now()) @map("created_at")
+
+  // Relations
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("notifications")
+}
+
+// ========================
+// ADMIN SETTINGS
+// ========================
+
+model AdminSetting {
+  id    String @id @default(uuid())
+  key   String @unique
+  value String
+  label String? // Human-readable description
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("admin_settings")
+}
+
+// Default admin settings to seed:
+// challenge_max_active: "3"
+// challenge_expiry_hours: "24"
+// challenge_elo_diminish_window_days: "21"
+// challenge_elo_match2_multiplier: "0.80"
+// challenge_elo_match3_multiplier: "0.50"
+// challenge_elo_match4plus_multiplier: "0.25"
+// tournament_elo_multiplier: "1.00"
+// prediction_lock_minutes_before: "5"
+// elo_starting_rating: "1000"
+// elo_k_factor: "32"
+
+// ============================================================
+// ADMIN AUDIT LOG — Security & Accountability
+// ============================================================
+model AdminAuditLog {
+  id         String   @id @default(uuid())
+  adminId    String
+  admin      User     @relation("AuditLogAdmin", fields: [adminId], references: [id])
+  action     String   // e.g. USER_ROLE_CHANGED, TOURNAMENT_CREATED
+  targetType String?  // e.g. user, tournament, fixture
+  targetId   String?  // ID of the affected entity
+  details    String?  // JSON string with additional context
+  ip         String?  // Request IP address
+  createdAt  DateTime @default(now())
+
+  @@index([adminId])
+  @@index([action])
+  @@index([createdAt])
+  @@map("admin_audit_log")
+}
