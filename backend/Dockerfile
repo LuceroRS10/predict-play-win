@@ -5,7 +5,7 @@ WORKDIR /app
 # Install dependencies
 COPY package*.json ./
 COPY prisma ./prisma/
-RUN npm ci
+RUN npm install
 
 # Generate Prisma client
 RUN npx prisma generate
@@ -29,5 +29,5 @@ RUN mkdir -p uploads/profiles
 
 EXPOSE 4000
 
-# Run migrations and start
-CMD ["sh", "-c", "npx prisma migrate deploy && node dist/index.js"]
+# Push schema to DB and start
+CMD ["sh", "-c", "npx prisma db push --skip-generate && node dist/index.js"]
